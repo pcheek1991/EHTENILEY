@@ -123,18 +123,18 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" --model <model name>
 ```
 
-You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), and gcc (recommended, used as a compile check). JScript mode additionally needs Microsoft `jsc.exe`.
+You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), gcc (recommended, used as a compile check), and the .NET SDK (`dotnet fsi`) for COREO. JScript mode additionally needs Microsoft `jsc.exe`.
 
 ------------------------------
 ----- COREO: both pipelines -----
 ------------------------------
 
-All COREO orchestration lives in the single `run_coreo()` function in `coreo_pipeline.py`; the CLI calls that same function. It composes, rather than replaces, the existing pipeline commands. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
+All COREO orchestration lives in the single `runCoreo` function in `coreo_pipeline.fsx`; the F# Interactive script calls that same function. The function stays multiline to keep stage control flow and error/provenance handling readable. It composes, rather than replaces, the existing pipeline commands. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
 
 From the repository root, run:
 
 ```
-python .\coreo_pipeline.py --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 ```
 
 COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.
@@ -142,6 +142,14 @@ COREO stages the source dump files without changing them, then runs grouping, tr
 The default output language remains C. Use `--lang C++` for C++, or `--lang JScript --jsc "<path to jsc.exe>"` for JScript.NET. JScript mode writes `.js` source under `JSCRIPT` and compiles a `.NET` `.exe` under `NET`; it never runs the generated executable. This JScript.NET target is not Java or JVM 1.3.1.
 
 Each run uses a new output directory. `COREO_MANIFEST.json` records input hashes, options, selected queue rows, stage status, model settings, and output paths; server URL credentials, path, and query are redacted. Ghidra artifacts remain under `ghidra\OUT`; per-group blueprints and LLM results remain under `llm\<GroupName>`. You can still run every existing script directly as described in the two instruction files.
+
+COREO can restore the staged Ghidra dump files from an earlier run into a new directory, checking their recorded SHA-256 hashes:
+
+```
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode REVERSE --source-run ".\COREO_RUNS\<prior-run>" --out ".\COREO_RESTORES\<restore-name>"
+```
+
+Use `--mode BIDI` with the normal `--dump-root`, `--program`, and `--out` arguments to run forward and then verify an exact restoration under `BIDI_RESTORE\source`. This inverse restores only the preserved dump artifacts; it does not reconstruct the original executable or reverse lossy LLM-generated C, C++, JScript, or .NET output.
 
 --------------------------
 ----- Results so far -----

@@ -460,7 +460,7 @@ OPTIONAL: RUN BOTH PIPELINES WITH COREO
 First create the Ghidra dump as above. The PyGhidra exporter runs inside
 Ghidra and remains a separate step. From the repository root, run:
 
-python .\coreo_pipeline.py --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 
 COREO stages the assembly and C dumps plus optional classes/imports without
 editing the original dump. It then runs make_full_lite_v2.py,
@@ -479,3 +479,10 @@ Every --out directory must be new. COREO keeps the normal Ghidra outputs under
 ghidra\OUT, per-group LLM outputs under llm\<GroupName>, and records source
 hashes, selected queue rows, options, stage status, and output paths in
 COREO_MANIFEST.json. The standalone commands above remain available.
+
+Use --mode BIDI to run forward and restore the staged dump inputs into
+BIDI_RESTORE\source with SHA-256 verification. Use --mode REVERSE with
+--source-run "<prior COREO run>" and a new --out directory to restore an
+existing run's preserved dump files. This restores only the staged Ghidra
+text artifacts; it cannot reconstruct the original executable or reverse
+LLM-generated source. COREO requires the .NET SDK's F# Interactive (`dotnet fsi`).

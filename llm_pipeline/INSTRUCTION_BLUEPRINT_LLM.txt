@@ -241,7 +241,7 @@ After PyGhidra has written its `<program>_ASSEMBLY`, `<program>_C_PSEUDOCODE`,
 and `<program>_INVENTORY` folders, run the COREO entry point from the repository
 root:
 
-python .\coreo_pipeline.py --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 
 COREO stages the Ghidra inputs and runs grouping, triage, roles/queues,
 queue-filtered blueprints, and the LLM runner in order. Both KEEP and WRAP are
@@ -259,3 +259,10 @@ The completed Ghidra artifacts remain under `ghidra\OUT`; each group's
 `llm\<GroupName>`. The root `COREO_MANIFEST.json` records source hashes,
 selected queue rows, options, stage results, and output paths. Each run needs
 a new output directory. The manual commands in this file still work unchanged.
+
+`--mode REVERSE --source-run "<prior COREO run>" --out "<new restore directory>"`
+restores the preserved Ghidra dump files after SHA-256 verification.
+`--mode BIDI` runs the forward pipeline and verifies that those original dump
+inputs can be restored under `BIDI_RESTORE\source`. This inverse uses the
+preserved source/provenance; it cannot infer the original executable or source
+from lossy LLM output.
