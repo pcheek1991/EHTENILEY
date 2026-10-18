@@ -466,6 +466,8 @@ Equivalent full orchestration entry points are available as
 `lua .\coreo_pipeline.lua`, `Rscript .\coreo_pipeline.R`, and
 `python .\coreo_pipeline.py`; they accept the same COREO flags and compose the
 existing Ghidra/LLM pipeline CLIs.
+The legacy `coreo_pipeline_py2.py` backport requires a Python 3 executable via
+`--python`; Python 2.7 is end-of-life (see the README for isolated venv setup).
 
 COREO stages the assembly and C dumps plus optional classes/imports without
 editing the original dump. It then runs make_full_lite_v2.py,

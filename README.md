@@ -145,6 +145,15 @@ Rscript .\coreo_pipeline.R --mode FORWARD --dump-root "$env:USERPROFILE\Download
 python .\coreo_pipeline.py --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 ```
 
+The legacy Python 2.7 backport is `coreo_pipeline_py2.py`. Python 2.7 is end-of-life; use it only in an isolated compatibility environment. The backport invokes the existing Python 3 Ghidra/LLM CLIs, so pass their interpreter with `--python` when `python3` is not on PATH:
+
+```
+python2 -m pip install virtualenv==16.7.12
+python2 -m virtualenv .\.venv-py2
+.\.venv-py2\Scripts\python.exe -m pip install -r .\requirements-py2.txt
+.\.venv-py2\Scripts\python.exe .\coreo_pipeline_py2.py --python "<Python 3 executable>" --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
 COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.
 
 The default output language remains C. Use `--lang C++` for C++, or `--lang JScript --jsc "<path to jsc.exe>"` for JScript.NET. JScript mode writes `.js` source under `JSCRIPT` and compiles a `.NET` `.exe` under `NET`; it never runs the generated executable. This JScript.NET target is not Java or JVM 1.3.1.

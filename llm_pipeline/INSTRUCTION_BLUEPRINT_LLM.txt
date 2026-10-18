@@ -247,6 +247,8 @@ Equivalent full orchestration entry points are available as
 `lua .\coreo_pipeline.lua`, `Rscript .\coreo_pipeline.R`, and
 `python .\coreo_pipeline.py`; they accept the same COREO flags and compose the
 existing Ghidra/LLM pipeline CLIs.
+The legacy `coreo_pipeline_py2.py` backport requires a Python 3 executable via
+`--python`; Python 2.7 is end-of-life (see the README for isolated venv setup).
 
 COREO stages the Ghidra inputs and runs grouping, triage, roles/queues,
 queue-filtered blueprints, and the LLM runner in order. Both KEEP and WRAP are
