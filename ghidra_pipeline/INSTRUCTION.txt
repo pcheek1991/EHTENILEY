@@ -468,6 +468,8 @@ Equivalent full orchestration entry points are available as
 existing Ghidra/LLM pipeline CLIs.
 The legacy `coreo_pipeline_py2.py` backport requires a Python 3 executable via
 `--python`; Python 2.7 is end-of-life (see the README for isolated venv setup).
+The C# port is `coreo_pipeline.cs`, loaded by PowerShell Core 7.6.7:
+`pwsh -NoProfile -File .\coreo_pipeline.ps1 --mode FORWARD ...`.
 
 COREO stages the assembly and C dumps plus optional classes/imports without
 editing the original dump. It then runs make_full_lite_v2.py,

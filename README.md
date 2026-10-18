@@ -123,7 +123,7 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" --model <model name>
 ```
 
-You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), gcc (recommended, used as a compile check), and the .NET SDK (`dotnet fsi`) for COREO. JScript mode additionally needs Microsoft `jsc.exe`.
+You need Ghidra with PyGhidra, Python 3 for the existing pipeline CLIs, LM Studio (one model loaded), and gcc (recommended, used as a compile check). The canonical F# entry point uses the .NET SDK (`dotnet fsi`); the C# port uses PowerShell Core 7.6.7. Lua/R/Python 2 entry points need their respective runtimes. JScript mode additionally needs Microsoft `jsc.exe`.
 
 ------------------------------
 ----- COREO: both pipelines -----
@@ -152,6 +152,12 @@ python2 -m pip install virtualenv==16.7.12
 python2 -m virtualenv .\.venv-py2
 .\.venv-py2\Scripts\python.exe -m pip install -r .\requirements-py2.txt
 .\.venv-py2\Scripts\python.exe .\coreo_pipeline_py2.py --python "<Python 3 executable>" --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+The C# port is in `coreo_pipeline.cs` and is loaded by the PowerShell Core 7.6.7 wrapper; `Add-Type` compiles it in-process, and COREO does not produce or run a C# executable:
+
+```
+pwsh -NoProfile -File .\coreo_pipeline.ps1 --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 ```
 
 COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.
