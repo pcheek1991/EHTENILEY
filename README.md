@@ -129,7 +129,7 @@ You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), and gcc (
 ----- COREO: both pipelines -----
 ------------------------------
 
-COREO joins the two existing components without replacing their standalone commands. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
+All COREO orchestration lives in the single `run_coreo()` function in `coreo_pipeline.py`; the CLI calls that same function. It composes, rather than replaces, the existing pipeline commands. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
 
 From the repository root, run:
 
