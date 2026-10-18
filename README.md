@@ -129,12 +129,20 @@ You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), gcc (reco
 ----- COREO: both pipelines -----
 ------------------------------
 
-All COREO orchestration lives in the single `runCoreo` function in `coreo_pipeline.fsx`; the F# Interactive script calls that same function. The function stays multiline to keep stage control flow and error/provenance handling readable. It composes, rather than replaces, the existing pipeline commands. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
+F# remains the canonical COREO implementation in the single `runCoreo` function in `coreo_pipeline.fsx`. The function stays multiline to keep stage control flow and error/provenance handling readable. Full orchestration ports in Lua, R, and Python 3 use the same Ghidra/LLM CLI interfaces; Lua keeps the flow documented, while R vectorizes the CAND byte operations. Correctness parity is tested; no runtime speed winner is claimed without a benchmark. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
 
 From the repository root, run:
 
 ```
 dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+The same arguments are accepted by the Lua, R, and Python 3 ports:
+
+```
+lua .\coreo_pipeline.lua --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+Rscript .\coreo_pipeline.R --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+python .\coreo_pipeline.py --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 ```
 
 COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.

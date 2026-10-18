@@ -170,13 +170,12 @@ def reference_coreoao_hex(current, previous, before_previous):
 
 
 class CoreoPipelineTests(unittest.TestCase):
-    def test_fsharp_production_entry_is_one_function_in_one_file(self):
+    def test_fsharp_canonical_entry_is_one_function_in_one_file(self):
         source = FSHARP_COREO_SCRIPT.read_text(encoding="utf-8")
         top_level_bindings = [line for line in source.splitlines() if line.startswith("let ")]
 
         self.assertEqual(1, len(top_level_bindings))
         self.assertTrue(top_level_bindings[0].startswith("let runCoreo "))
-        self.assertFalse((REPO_ROOT / "coreo_pipeline.py").exists())
         self.assertNotRegex(source, r"\b(?:eval|exec)\s*\(")
         self.assertNotRegex(source, r"\bfun\b")
 

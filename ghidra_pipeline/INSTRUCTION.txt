@@ -462,6 +462,11 @@ Ghidra and remains a separate step. From the repository root, run:
 
 dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
 
+Equivalent full orchestration entry points are available as
+`lua .\coreo_pipeline.lua`, `Rscript .\coreo_pipeline.R`, and
+`python .\coreo_pipeline.py`; they accept the same COREO flags and compose the
+existing Ghidra/LLM pipeline CLIs.
+
 COREO stages the assembly and C dumps plus optional classes/imports without
 editing the original dump. It then runs make_full_lite_v2.py,
 triage_evidence_v2.py, build_roles_v2.py, blueprint_v3.py, and the LLM runner.

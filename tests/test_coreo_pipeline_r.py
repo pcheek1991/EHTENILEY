@@ -12,7 +12,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 R_COREO_SCRIPT = REPO_ROOT / "coreo_pipeline.R"
-RSCRIPT = shutil.which("Rscript") or shutil.which("Rscript.exe")
 TESTS_DIR = Path(__file__).resolve().parent
 if str(TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(TESTS_DIR))
@@ -23,6 +22,37 @@ from test_coreo_pipeline import (  # noqa: E402
     make_pipeline_dump,
     reference_coreoao_hex,
 )
+
+
+def find_rscript():
+    rscript = shutil.which("Rscript") or shutil.which("Rscript.exe")
+    if rscript or os.name != "nt":
+        return rscript
+    roots = []
+    if os.environ.get("R_HOME"):
+        roots.append(Path(os.environ["R_HOME"]))
+    roots.extend([
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "R",
+        Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "R",
+    ])
+    candidates = []
+    for root in roots:
+        for executable in (
+                root / "bin" / "Rscript.exe",
+                root / "bin" / "x64" / "Rscript.exe"):
+            if executable.is_file():
+                candidates.append(executable)
+        if root.is_dir():
+            for version_directory in sorted(root.glob("R-*")):
+                for executable in (
+                        version_directory / "bin" / "Rscript.exe",
+                        version_directory / "bin" / "x64" / "Rscript.exe"):
+                    if executable.is_file():
+                        candidates.append(executable)
+    return str(candidates[-1]) if candidates else None
+
+
+RSCRIPT = find_rscript()
 
 
 def run_r_coreo(args, timeout=300):
