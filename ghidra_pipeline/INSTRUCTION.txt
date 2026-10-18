@@ -480,6 +480,14 @@ ghidra\OUT, per-group LLM outputs under llm\<GroupName>, and records source
 hashes, selected queue rows, options, stage status, and output paths in
 COREO_MANIFEST.json. The standalone commands above remain available.
 
+After each LLM run, COREO writes language-independent `.hex` sidecars under
+`llm\<GroupName>\RUN1_v3_<model>\COREOAO`. It applies the CAND formula to the
+current source and previous two selected sources in manifest selection order;
+the first two selected sources are skipped. The sidecars are lossy, not
+cryptographic output, and do not replace the C/C++/JScript source files.
+Each sidecar has one byte per shared UTF-16 code-unit index.
+`REVERSE`/`BIDI` restore only staged Ghidra dump inputs, not `.hex` files.
+
 Use --mode BIDI to run forward and restore the staged dump inputs into
 BIDI_RESTORE\source with SHA-256 verification. Use --mode REVERSE with
 --source-run "<prior COREO run>" and a new --out directory to restore an

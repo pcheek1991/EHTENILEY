@@ -143,6 +143,16 @@ The default output language remains C. Use `--lang C++` for C++, or `--lang JScr
 
 Each run uses a new output directory. `COREO_MANIFEST.json` records input hashes, options, selected queue rows, stage status, model settings, and output paths; server URL credentials, path, and query are redacted. Ghidra artifacts remain under `ghidra\OUT`; per-group blueprints and LLM results remain under `llm\<GroupName>`. You can still run every existing script directly as described in the two instruction files.
 
+After LLM output is written, COREO adds language-independent `.hex` sidecars under `llm\<GroupName>\RUN1_v3_<model>\COREOAO`. In manifest selection order, each eligible current source is `M0`, with the preceding selected sources as `M1` and `M2`; the first two selections are skipped until a full history exists. The transform uses JavaScript-compatible UTF-16 code units, the fixed mask `0x3F`, and shift `3`, producing uppercase byte pairs separated by spaces:
+
+```
+v = (abs(M0[i] - M1[i]) XOR abs(M1[i] - M2[i]) XOR (M0[i] AND 0x3F)) OR 0xC0
+out[i] = (v OR ((v << 3) OR (v >> 5))) AND 0xFF
+```
+
+Each sidecar has `min(M0.Length, M1.Length, M2.Length)` output bytes, using UTF-16 code-unit indices.
+These sidecars are a deterministic, lossy mapping—not encryption or a reversible encoding. The original C/C++/JScript source files remain untouched, with their hashes and the three source paths recorded in the manifest. `REVERSE` and `BIDI` restore/verify the staged Ghidra dump inputs only; they do not decode or reconstruct source from `.hex`.
+
 COREO can restore the staged Ghidra dump files from an earlier run into a new directory, checking their recorded SHA-256 hashes:
 
 ```

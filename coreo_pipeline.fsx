@@ -865,6 +865,159 @@ let runCoreo (rawArgs: string array) =
                     groupOutputRecord.["result_summary"] <- box resultSummary
                     File.WriteAllText(manifestTemp, JsonSerializer.Serialize(manifest, jsonOptions) + Environment.NewLine, utf8)
                     File.Move(manifestTemp, manifestPath, true)
+            let hexStage = Dictionary<string, obj>(StringComparer.Ordinal)
+            hexStage.["name"] <- box "coreoao-hex-optimizer"
+            hexStage.["status"] <- box "running"
+            hexStage.["started_at"] <- box (DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture))
+            stages.Add(box hexStage)
+            activeStageRef <- Some hexStage
+            manifest.["current_stage"] <- box "coreoao-hex-optimizer"
+            let mask = 0x3F
+            let shift = 3
+            let sourceDirectoryName, sourceExtension =
+                match language with
+                | "C" -> ("C", ".c")
+                | "C++" -> ("CPP", ".cpp")
+                | "JScript" -> ("JSCRIPT", ".js")
+                | _ -> raise (ArgumentException("unsupported COREO source language"))
+            let selectedSourcePaths = Array.zeroCreate<string> selected.Count
+            let selectedSourceTexts = Array.zeroCreate<string> selected.Count
+            let selectedSourceHashes = Array.zeroCreate<string> selected.Count
+            let selectedRunDirectories = Array.zeroCreate<string> selected.Count
+            if selected.Count > 0 then
+                for sourceIndex in 0 .. selected.Count - 1 do
+                    let item = selected.[sourceIndex]
+                    let groupName = item.["group"] :?> string
+                    let groupOutputRecord = groupOutputs.[groupName] :?> Dictionary<string, obj>
+                    let runDirectory = groupOutputRecord.["llm_run"] :?> string
+                    let codeDirectory = Path.Combine(runDirectory, sourceDirectoryName)
+                    let entry = item.["entry"] :?> string
+                    let sourceMatches =
+                        Directory.GetFiles(
+                            codeDirectory,
+                            entry + "_*" + sourceExtension,
+                            SearchOption.TopDirectoryOnly
+                        )
+                    if sourceMatches.Length <> 1 then
+                        raise (InvalidDataException(
+                            sprintf "expected one %s source artifact for selected entry %s, found %d"
+                                language entry sourceMatches.Length
+                        ))
+                    selectedSourcePaths.[sourceIndex] <- sourceMatches.[0]
+                    selectedSourceTexts.[sourceIndex] <- File.ReadAllText(sourceMatches.[0], utf8)
+                    selectedRunDirectories.[sourceIndex] <- runDirectory
+                    use sourceStream = File.OpenRead(sourceMatches.[0])
+                    use sourceDigest = SHA256.Create()
+                    selectedSourceHashes.[sourceIndex] <-
+                        Convert.ToHexString(sourceDigest.ComputeHash(sourceStream)).ToLowerInvariant()
+
+            let hexOutputRecords = ResizeArray<obj>()
+            let hexOutputPaths = ResizeArray<string>()
+            let skippedHexEntries = ResizeArray<obj>()
+            let hexOptimizer = Dictionary<string, obj>(StringComparer.Ordinal)
+            hexOptimizer.["algorithm"] <- box "COREOAO CAND"
+            hexOptimizer.["contract_version"] <- box "coreoaoBytes-js-v1"
+            hexOptimizer.["language"] <- box language
+            hexOptimizer.["mask"] <- box mask
+            hexOptimizer.["shift"] <- box shift
+            hexOptimizer.["input_encoding"] <- box "UTF-16 code units"
+            hexOptimizer.["length_policy"] <-
+                box "one output byte per shared UTF-16 index; length is min(M0.Length, M1.Length, M2.Length)"
+            hexOptimizer.["source_order"] <- box "manifest selection order"
+            hexOptimizer.["formula"] <-
+                box "v=(abs(M0[i]-M1[i]) ^ abs(M1[i]-M2[i]) ^ (M0[i] & mask)) | (~mask & 0xFF); out[i]=(v | ((v << (shift % 8)) | (v >> (8-(shift % 8))))) & 0xFF"
+            hexOptimizer.["output_format"] <- box "uppercase two-digit hex bytes separated by spaces, LF-terminated"
+            hexOptimizer.["reversible"] <- box false
+            hexOptimizer.["original_sources_retained"] <- box true
+            hexOptimizer.["reverse_scope"] <-
+                box "COREO REVERSE restores Ghidra dump inputs only; generated language source is retained and is not recovered from hex."
+            hexOptimizer.["outputs"] <- box hexOutputRecords
+            hexOptimizer.["skipped_entries"] <- box skippedHexEntries
+            hexOptimizer.["output_count"] <- box 0
+            hexOptimizer.["skipped_count"] <- box 0
+            manifest.["hex_optimizer"] <- box hexOptimizer
+            outputs.["coreoao_hex"] <- box (Array.empty<string>)
+            File.WriteAllText(manifestTemp, JsonSerializer.Serialize(manifest, jsonOptions) + Environment.NewLine, utf8)
+            File.Move(manifestTemp, manifestPath, true)
+
+            let createdHexDirectories = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            if selected.Count > 0 then
+                for sourceIndex in 0 .. selected.Count - 1 do
+                    let item = selected.[sourceIndex]
+                    if sourceIndex < 2 then
+                        let skipped = Dictionary<string, obj>(StringComparer.Ordinal)
+                        skipped.["entry"] <- box (item.["entry"] :?> string)
+                        skipped.["group"] <- box (item.["group"] :?> string)
+                        skipped.["track"] <- box (item.["track"] :?> string)
+                        skipped.["source_path"] <- box selectedSourcePaths.[sourceIndex]
+                        skipped.["source_sha256"] <- box selectedSourceHashes.[sourceIndex]
+                        skipped.["reason"] <- box "two prior selected source artifacts are required"
+                        skippedHexEntries.Add(box skipped)
+                    else
+                        let currentText = selectedSourceTexts.[sourceIndex]
+                        let previousText = selectedSourceTexts.[sourceIndex - 1]
+                        let beforePreviousText = selectedSourceTexts.[sourceIndex - 2]
+                        let outputLength = min currentText.Length (min previousText.Length beforePreviousText.Length)
+                        let hexBytes = ResizeArray<string>()
+                        for characterIndex in 0 .. outputLength - 1 do
+                            let m0 = int32 (int currentText.[characterIndex])
+                            let m1 = int32 (int previousText.[characterIndex])
+                            let m2 = int32 (int beforePreviousText.[characterIndex])
+                            let diff1 = abs (m0 - m1)
+                            let diff2 = abs (m1 - m2)
+                            let value = (diff1 ^^^ diff2 ^^^ (m0 &&& mask)) ||| ((~~~mask) &&& 0xFF)
+                            let rotation = shift % 8
+                            let rotated =
+                                (value <<< rotation) ||| (value >>> (8 - rotation))
+                            let outputByte = (value ||| rotated) &&& 0xFF
+                            hexBytes.Add(outputByte.ToString("X2", CultureInfo.InvariantCulture))
+                        let runDirectory = selectedRunDirectories.[sourceIndex]
+                        let hexDirectory = Path.Combine(runDirectory, "COREOAO")
+                        if createdHexDirectories.Add(hexDirectory) then
+                            if Directory.Exists(hexDirectory) || File.Exists(hexDirectory) then
+                                raise (IOException("COREOAO output directory already exists: " + hexDirectory))
+                            Directory.CreateDirectory(hexDirectory) |> ignore
+                        let sourcePath = selectedSourcePaths.[sourceIndex]
+                        let sidecarPath =
+                            Path.Combine(hexDirectory, Path.GetFileNameWithoutExtension(sourcePath) + ".hex")
+                        if File.Exists(sidecarPath) then
+                            raise (IOException("COREOAO sidecar already exists: " + sidecarPath))
+                        File.WriteAllText(sidecarPath, String.Join(" ", hexBytes.ToArray()) + "\n", utf8)
+                        use sidecarStream = File.OpenRead(sidecarPath)
+                        use sidecarDigest = SHA256.Create()
+                        let sidecarHash =
+                            Convert.ToHexString(sidecarDigest.ComputeHash(sidecarStream)).ToLowerInvariant()
+                        let record = Dictionary<string, obj>(StringComparer.Ordinal)
+                        record.["entry"] <- box (item.["entry"] :?> string)
+                        record.["group"] <- box (item.["group"] :?> string)
+                        record.["track"] <- box (item.["track"] :?> string)
+                        record.["source_path"] <- box sourcePath
+                        record.["source_sha256"] <- box selectedSourceHashes.[sourceIndex]
+                        record.["previous_source_path"] <- box selectedSourcePaths.[sourceIndex - 1]
+                        record.["previous_source_sha256"] <- box selectedSourceHashes.[sourceIndex - 1]
+                        record.["before_previous_source_path"] <- box selectedSourcePaths.[sourceIndex - 2]
+                        record.["before_previous_source_sha256"] <- box selectedSourceHashes.[sourceIndex - 2]
+                        record.["sidecar_path"] <- box sidecarPath
+                        record.["sidecar_sha256"] <- box sidecarHash
+                        record.["byte_count"] <- box hexBytes.Count
+                        hexOutputRecords.Add(box record)
+                        hexOutputPaths.Add(sidecarPath)
+                        let groupName = item.["group"] :?> string
+                        let groupOutputRecord = groupOutputs.[groupName] :?> Dictionary<string, obj>
+                        groupOutputRecord.["coreoao_hex"] <- box hexDirectory
+            hexOptimizer.["output_count"] <- box hexOutputRecords.Count
+            hexOptimizer.["skipped_count"] <- box skippedHexEntries.Count
+            hexStage.["input_count"] <- box selected.Count
+            hexStage.["output_count"] <- box hexOutputRecords.Count
+            hexStage.["skipped_count"] <- box skippedHexEntries.Count
+            hexStage.["returncode"] <- box 0
+            hexStage.["status"] <- box "completed"
+            hexStage.["finished_at"] <- box (DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture))
+            outputs.["coreoao_hex"] <- box (hexOutputPaths.ToArray())
+            activeStageRef <- None
+            manifest.Remove("current_stage") |> ignore
+            File.WriteAllText(manifestTemp, JsonSerializer.Serialize(manifest, jsonOptions) + Environment.NewLine, utf8)
+            File.Move(manifestTemp, manifestPath, true)
             if mode = "BIDI" then
                 let bidiRestoreDir = Path.Combine(outputDir, "BIDI_RESTORE")
                 let scriptPath = Path.Combine(repositoryRoot, "coreo_pipeline.fsx")

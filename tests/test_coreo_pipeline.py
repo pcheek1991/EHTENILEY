@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -18,6 +19,7 @@ FSHARP_COREO_SCRIPT = REPO_ROOT / "coreo_pipeline.fsx"
 
 class FakeChatHandler(BaseHTTPRequestHandler):
     language = "C"
+    marker = ""
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -25,6 +27,7 @@ class FakeChatHandler(BaseHTTPRequestHandler):
         prompt = request["messages"][-1]["content"]
         match = re.search(r"^BLUEPRINT[ \t]+([^\s]+)", prompt, re.M)
         function_name = match.group(1) if match else "hello"
+        marker_line = ("    // UTF-16 marker: %s\n" % self.marker) if self.marker else ""
         if self.language == "JScript":
             source = (
                 "function %s() {\n"
@@ -33,9 +36,10 @@ class FakeChatHandler(BaseHTTPRequestHandler):
                 "    // Returns: one\n"
                 "    // Globals: none\n"
                 "    // Calls: none\n"
+                "%s"
                 "    return 1;\n"
                 "}\n"
-            ) % function_name
+            ) % (function_name, marker_line)
         else:
             source = (
                 "/*\n"
@@ -45,8 +49,9 @@ class FakeChatHandler(BaseHTTPRequestHandler):
                 "Globals: none.\n"
                 "Calls: none.\n"
                 "*/\n"
+                "%s"
                 "int32_t %s(void) { return 1; }\n"
-            ) % function_name
+            ) % (marker_line, function_name)
         body = "".join(
             "data: %s\n\n" % json.dumps({"choices": [{"delta": {"content": chunk}}]})
             for chunk in source.splitlines(keepends=True)
@@ -62,7 +67,7 @@ class FakeChatHandler(BaseHTTPRequestHandler):
         pass
 
 
-def make_pipeline_dump(root, program="demo"):
+def make_pipeline_dump(root, program="demo", include_third=False):
     folders = {
         "assembly": root / (program + "_ASSEMBLY"),
         "c": root / (program + "_C_PSEUDOCODE"),
@@ -75,6 +80,12 @@ def make_pipeline_dump(root, program="demo"):
         ("Java_com_game_Core_wrap", "00402000",
          "int Java_com_game_Core_wrap(void) { CreateFileA(); return 1; }"),
     ]
+    if include_third:
+        functions.append((
+            "Java_com_game_Core_keep2",
+            "00403000",
+            "int Java_com_game_Core_keep2(void) { return 1; }",
+        ))
     assembly = []
     pseudocode = []
     for name, entry, body in functions:
@@ -130,6 +141,32 @@ def run_fsharp_coreo(args, timeout=180):
         ["dotnet", "fsi", "--quiet", "--exec", str(FSHARP_COREO_SCRIPT), "--"] + args,
         cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=timeout, check=False,
     )
+
+
+def js_utf16_units(text):
+    encoded = text.encode("utf-16-le", "surrogatepass")
+    return [
+        encoded[index] | (encoded[index + 1] << 8)
+        for index in range(0, len(encoded), 2)
+    ]
+
+
+def reference_coreoao_hex(current, previous, before_previous):
+    current_units = js_utf16_units(current)
+    previous_units = js_utf16_units(previous)
+    before_previous_units = js_utf16_units(before_previous)
+    output = []
+    for index in range(min(len(current_units), len(previous_units), len(before_previous_units))):
+        m0 = current_units[index]
+        m1 = previous_units[index]
+        m2 = before_previous_units[index]
+        value = (
+            abs(m0 - m1) ^ abs(m1 - m2) ^ (m0 & 0x3F)
+        ) | ((~0x3F) & 0xFF)
+        rotation = 3 % 8
+        rotated = (value << rotation) | (value >> (8 - rotation))
+        output.append((value | rotated) & 0xFF)
+    return " ".join("%02X" % value for value in output)
 
 
 class CoreoPipelineTests(unittest.TestCase):
@@ -216,6 +253,9 @@ class CoreoPipelineTests(unittest.TestCase):
             manifest = json.loads((output_dir / "COREO_MANIFEST.json").read_text(encoding="utf-8"))
             self.assertEqual("BIDI", manifest["mode"])
             self.assertEqual("completed", manifest["status"])
+            self.assertEqual(0, manifest["hex_optimizer"]["output_count"])
+            self.assertEqual(2, manifest["hex_optimizer"]["skipped_count"])
+            self.assertFalse(manifest["hex_optimizer"]["reversible"])
             manifest_text = (output_dir / "COREO_MANIFEST.json").read_text(encoding="utf-8")
             self.assertNotIn("redact-me", manifest_text)
             self.assertEqual(
@@ -269,6 +309,135 @@ class CoreoPipelineTests(unittest.TestCase):
             self.assertNotEqual(0, tampered_result.returncode)
             self.assertIn("preserved source hash mismatch", tampered_result.stderr)
             self.assertFalse(tampered_restore.exists())
+
+    def test_fsharp_coreoao_hex_sidecars_across_languages(self):
+        jsc = shutil.which("jsc.exe") or shutil.which("jsc")
+        if not jsc and os.name == "nt":
+            windows_root = Path(os.environ.get("WINDIR", r"C:\Windows"))
+            for framework, version in (
+                    ("Framework", "v4.0.30319"),
+                    ("Framework64", "v4.0.30319"),
+                    ("Framework", "v2.0.50727"),
+                    ("Framework64", "v2.0.50727")):
+                candidate = windows_root / "Microsoft.NET" / framework / version / "jsc.exe"
+                if candidate.is_file():
+                    jsc = str(candidate)
+                    break
+
+        languages = ["C", "C++"]
+        if jsc:
+            languages.append("JScript")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dump_root = root / "dumps"
+            make_pipeline_dump(dump_root, include_third=True)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for language in languages:
+                    FakeChatHandler.language = language
+                    FakeChatHandler.marker = "\u0100" if language == "C" else ""
+                    output_dir = root / ("COREO_" + language.replace("+", "plus"))
+                    args = [
+                        "--mode", "BIDI" if language == "C" else "FORWARD",
+                        "--dump-root", str(dump_root),
+                        "--program", "demo",
+                        "--out", str(output_dir),
+                        "--python", sys.executable,
+                        "--url", "http://127.0.0.1:%d" % server.server_address[1],
+                        "--lang", language,
+                    ]
+                    if language == "JScript":
+                        args.extend(["--jsc", str(jsc)])
+                    result = run_fsharp_coreo(args, timeout=240)
+                    self.assertEqual(0, result.returncode,
+                                     result.stdout + result.stderr + " (lang=%s)" % language)
+
+                    manifest = json.loads(
+                        (output_dir / "COREO_MANIFEST.json").read_text(encoding="utf-8")
+                    )
+                    optimizer = manifest["hex_optimizer"]
+                    self.assertEqual(language, optimizer["language"])
+                    self.assertEqual(0x3F, optimizer["mask"])
+                    self.assertEqual(3, optimizer["shift"])
+                    self.assertEqual("UTF-16 code units", optimizer["input_encoding"])
+                    self.assertIn("min(M0.Length", optimizer["length_policy"])
+                    self.assertFalse(optimizer["reversible"])
+                    self.assertTrue(optimizer["original_sources_retained"])
+                    self.assertEqual(
+                        "manifest selection order",
+                        optimizer["source_order"],
+                    )
+                    self.assertEqual(1, optimizer["output_count"])
+                    self.assertEqual(2, optimizer["skipped_count"])
+                    self.assertEqual(1, len(optimizer["outputs"]))
+                    self.assertEqual(2, len(optimizer["skipped_entries"]))
+                    self.assertEqual(
+                        [item["entry"] for item in manifest["selection"][:2]],
+                        [item["entry"] for item in optimizer["skipped_entries"]],
+                    )
+                    if language == "C":
+                        self.assertTrue(manifest["bidi"]["round_trip_verified"])
+
+                    record = optimizer["outputs"][0]
+                    source_path = Path(record["source_path"])
+                    previous_path = Path(record["previous_source_path"])
+                    before_previous_path = Path(record["before_previous_source_path"])
+                    expected_directory = {"C": "C", "C++": "CPP", "JScript": "JSCRIPT"}[language]
+                    self.assertEqual(expected_directory, source_path.parent.name)
+                    source_text = source_path.read_text(encoding="utf-8")
+                    previous_text = previous_path.read_text(encoding="utf-8")
+                    before_previous_text = before_previous_path.read_text(encoding="utf-8")
+                    if language == "C":
+                        self.assertIn("\u0100", source_text)
+                        self.assertIn("\u0100", previous_text)
+                        self.assertIn("\u0100", before_previous_text)
+                    self.assertEqual(
+                        hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                        record["source_sha256"],
+                    )
+                    self.assertEqual(
+                        hashlib.sha256(previous_path.read_bytes()).hexdigest(),
+                        record["previous_source_sha256"],
+                    )
+                    self.assertEqual(
+                        hashlib.sha256(before_previous_path.read_bytes()).hexdigest(),
+                        record["before_previous_source_sha256"],
+                    )
+                    expected_hex = reference_coreoao_hex(
+                        source_text, previous_text, before_previous_text
+                    )
+                    sidecar_path = Path(record["sidecar_path"])
+                    self.assertEqual("COREOAO", sidecar_path.parent.name)
+                    self.assertNotEqual(source_path, sidecar_path)
+                    sidecar_text = sidecar_path.read_text(encoding="utf-8")
+                    self.assertEqual(expected_hex + "\n", sidecar_text)
+                    self.assertEqual(
+                        "F7" if language == "JScript" else "FF",
+                        sidecar_text.split(" ", 1)[0],
+                    )
+                    self.assertEqual(
+                        hashlib.sha256(sidecar_path.read_bytes()).hexdigest(),
+                        record["sidecar_sha256"],
+                    )
+                    self.assertEqual(
+                        min(
+                            len(js_utf16_units(source_text)),
+                            len(js_utf16_units(previous_text)),
+                            len(js_utf16_units(before_previous_text)),
+                        ),
+                        record["byte_count"],
+                    )
+                    self.assertTrue(all(
+                        len(value) == 2 and int(value, 16) <= 0xFF
+                        for value in sidecar_text.strip().split(" ")
+                    ))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
 
     def test_fsharp_failure_manifest_records_upstream_failure(self):
         with tempfile.TemporaryDirectory() as temp:

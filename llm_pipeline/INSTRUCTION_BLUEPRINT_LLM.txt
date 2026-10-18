@@ -260,9 +260,17 @@ The completed Ghidra artifacts remain under `ghidra\OUT`; each group's
 selected queue rows, options, stage results, and output paths. Each run needs
 a new output directory. The manual commands in this file still work unchanged.
 
+COREO also writes language-independent `.hex` sidecars under
+`llm\<GroupName>\RUN1_v3_<model>\COREOAO`. For each source after the first two,
+the CAND transform uses that source as M0 and the preceding two selected
+sources as M1/M2 in manifest selection order. Inputs use UTF-16 code units;
+output length is the minimum input code-unit length and bytes are uppercase hex
+pairs. This transform is lossy, not encryption,
+and does not replace C/C++/JScript source files.
+
 `--mode REVERSE --source-run "<prior COREO run>" --out "<new restore directory>"`
 restores the preserved Ghidra dump files after SHA-256 verification.
 `--mode BIDI` runs the forward pipeline and verifies that those original dump
 inputs can be restored under `BIDI_RESTORE\source`. This inverse uses the
 preserved source/provenance; it cannot infer the original executable or source
-from lossy LLM output.
+from lossy LLM output or decode the `.hex` sidecars.
