@@ -5,6 +5,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -49,7 +50,8 @@ def run_coreo(argv=None, process_runner=None):
     parser.add_argument("--crt-start", help="optional triage CRT start address in hexadecimal")
     parser.add_argument("--model", default="qwen2.5-coder-14b-instruct")
     parser.add_argument("--url", default="http://127.0.0.1:1234")
-    parser.add_argument("--lang", choices=("C", "C++"), default="C")
+    parser.add_argument("--lang", choices=("C", "C++", "JScript"), default="C")
+    parser.add_argument("--jsc", type=Path, help="optional path to the JScript.NET compiler")
     parser.add_argument("--temp", type=float, default=0.0)
     args = parser.parse_args(argv)
     execute = process_runner if process_runner is not None else subprocess.run
@@ -75,6 +77,28 @@ def run_coreo(argv=None, process_runner=None):
                    if not source_files[name].is_file()]
         if missing:
             raise ValueError("missing required PyGhidra dump file(s): " + ", ".join(missing))
+        if args.lang == "JScript":
+            if args.jsc is not None:
+                args.jsc = Path(args.jsc).expanduser().resolve()
+            else:
+                jsc_path = shutil.which("jsc.exe") or shutil.which("jsc")
+                if not jsc_path and os.name == "nt":
+                    windows_root = Path(os.environ.get("WINDIR", r"C:\Windows"))
+                    for framework, version in (
+                        ("Framework", "v4.0.30319"),
+                        ("Framework64", "v4.0.30319"),
+                        ("Framework", "v2.0.50727"),
+                        ("Framework64", "v2.0.50727"),
+                    ):
+                        candidate = windows_root / "Microsoft.NET" / framework / version / "jsc.exe"
+                        if candidate.is_file():
+                            jsc_path = str(candidate)
+                            break
+                args.jsc = Path(jsc_path).expanduser().resolve() if jsc_path else None
+            if args.jsc is None or not args.jsc.is_file():
+                raise ValueError("JScript mode requires jsc.exe; pass --jsc or install it in a standard .NET Framework path")
+        elif args.jsc is not None:
+            raise ValueError("--jsc can only be used with --lang JScript")
 
         config_inputs = {}
         config_paths = (
@@ -82,6 +106,7 @@ def run_coreo(argv=None, process_runner=None):
             ("grouper_dir", True),
             ("sms", False),
             ("overrides", False),
+            ("jsc", False),
         )
         for name, is_directory in config_paths:
             config_path = getattr(args, name)
@@ -183,6 +208,7 @@ def run_coreo(argv=None, process_runner=None):
                     "model": args.model,
                     "url_origin": endpoint_origin,
                     "lang": args.lang,
+                    "jsc_path": str(args.jsc) if args.jsc else None,
                     "temperature": args.temp,
                 },
             },
@@ -527,6 +553,8 @@ def run_coreo(argv=None, process_runner=None):
                 sys.executable, str(runner_script), "--bp", str(bp_dir), "--out", str(run_dir),
                 "--model", args.model, "--url", args.url, "--lang", args.lang, "--temp", str(args.temp),
             ]
+            if args.lang == "JScript":
+                runner_command += ["--jsc", str(args.jsc)]
             recorded_runner_command = list(runner_command)
             recorded_url_index = recorded_runner_command.index("--url") + 1
             recorded_runner_command[recorded_url_index] = endpoint_origin

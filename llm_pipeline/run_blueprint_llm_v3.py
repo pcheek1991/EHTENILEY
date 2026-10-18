@@ -2,15 +2,16 @@
 # Licensed under the Apache License, Version 2.0
 # http://www.apache.org/licenses/LICENSE-2.0
 
-r"""run_blueprint_llm_v3.py (v2 + return-value check) - sends each BLUEPRINT to a local LLM (LM Studio), checks the C it returns, retries once.
+r"""run_blueprint_llm_v3.py (v2 + return-value check) - sends each BLUEPRINT to a local LLM (LM Studio), checks C/C++ or JScript.NET output, retries once.
 
-Usage:  python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" [--model NAME] [--url http://127.0.0.1:1234]
+Usage:  python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" [--model NAME] [--url http://127.0.0.1:1234] [--lang C|C++|JScript] [--jsc PATH]
 Needs : *.blueprint.txt and *.check.json from blueprint_v3.py; LM Studio server running with the model loaded.
 Writes: <out>\ALL_OUTPUT.txt   results + all code in ONE file (upload this one)
         <out>\RESULTS.txt      one line per function: PASS/FAIL, tries, seconds, tokens, reasons
         <out>\C\ (or CPP\)    the code files, one per function
         <out>\CHECKS\         PASS/FAIL + reasons, one per function
-Checks (plain text search + gcc -fsyntax-only if gcc is found; PASS needs both): function name present; every must_call / must_use_global / must_use_string
+JScript mode writes `.js` source and compiles a `.NET` `.exe` with jsc.exe; it never runs the executable.
+Checks (text checks plus the applicable compiler gate): function name present; every must_call / must_use_global / must_use_string
 appears exactly as named; names FUN_xxxxxxxx / DAT_xxxxxxxx that are NOT in the blueprint are flagged as invented.
 The LLM is free in style and structure; only these facts are enforced."""
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
@@ -20,30 +21,71 @@ ap.add_argument("--bp", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--model", default="qwen2.5-coder-14b-instruct")
 ap.add_argument("--url", default="http://127.0.0.1:1234")
-ap.add_argument("--lang", default="C", choices=["C", "C++"])
+ap.add_argument("--lang", default="C", choices=["C", "C++", "JScript"])
+ap.add_argument("--jsc", default=None, help="path to jsc.exe when --lang JScript")
 ap.add_argument("--temp", type=float, default=0.0)
 a = ap.parse_args()
-CODE_DIR = os.path.join(a.out, "CPP" if a.lang == "C++" else "C")
+JSC = None
+if a.lang == "JScript":
+    if a.jsc:
+        JSC = os.path.abspath(a.jsc)
+    else:
+        JSC = shutil.which("jsc.exe") or shutil.which("jsc")
+        if not JSC and os.name == "nt":
+            windows_root = os.environ.get("WINDIR", r"C:\Windows")
+            for framework, version in (
+                    ("Framework", "v4.0.30319"),
+                    ("Framework64", "v4.0.30319"),
+                    ("Framework", "v2.0.50727"),
+                    ("Framework64", "v2.0.50727")):
+                candidate = os.path.join(windows_root, "Microsoft.NET", framework, version, "jsc.exe")
+                if os.path.isfile(candidate):
+                    JSC = candidate
+                    break
+    if not JSC or not os.path.isfile(JSC):
+        ap.error("JScript mode requires jsc.exe; pass --jsc or install it in a standard .NET Framework path")
+elif a.jsc:
+    ap.error("--jsc can only be used with --lang JScript")
+
+CODE_DIR = os.path.join(a.out, {"C": "C", "C++": "CPP", "JScript": "JSCRIPT"}[a.lang])
 CHK_DIR = os.path.join(a.out, "CHECKS")
-for _d in (a.out, CODE_DIR, CHK_DIR):
+NET_DIR = os.path.join(a.out, "NET") if a.lang == "JScript" else None
+for _d in (a.out, CODE_DIR, CHK_DIR, NET_DIR):
+    if _d is None:
+        continue
     os.makedirs(_d, exist_ok=True)
 
-SYSTEM = ("You are a careful C/C++ programmer reconstructing source code of a 32-bit Windows program. "
-          "You get a BLUEPRINT made by a tool that read the machine code. The FACTS in it are exact. "
-          "Write the complete function in %s. You are free to choose variable names, structure and comments. "
-          "Rules you must follow: use every callee, global and string named in the FACTS with exactly that name; "
-          "do NOT write #include lines, extern lines or function prototypes: the DECLARATIONS section is added to your code automatically; "
-          "do not invent other FUN_/DAT_ names; do not use raw register names (eax, esp, ...) or goto labels: write normal structured C "
-          "(if/else/while/for) with meaningful variable names, and use a local array for the stack frame; "
-          "if the Ghidra C hint disagrees with the FACTS, trust the FACTS. "
-          "When the PSEUDO section says it is complete, your code must do exactly that, in that order (same operations, same operands). "
-          "If the BLUEPRINT has a CHECKLIST, it lists what the finished function must contain. "
-          "Write only the function itself (with its header comment). "
-          "Start the function with a header comment block for a human reader, with these lines: "
-          "Purpose: (one or two plain sentences; this line is your interpretation, so begin it with 'Inferred:'), "
-          "Args: (each argument and its meaning), Returns: (what the value is), "
-          "Globals: (each global, whether it is read or written), Calls: (each function it calls, and why, if clear). "
-          "Answer with one code block only, no explanation.")
+if a.lang == "JScript":
+    SYSTEM_PROMPT = (
+        "You are a careful JScript.NET programmer translating one function from a 32-bit Windows native-code BLUEPRINT. "
+        "This target is Microsoft JScript.NET compiled by jsc.exe to a .NET executable; it is not Java or JVM bytecode. "
+        "Write one complete JScript.NET function that preserves the BLUEPRINT FACTS. "
+        "Use syntax accepted by the legacy jsc.exe compiler: use var, function declarations, ordinary loops and conditionals; "
+        "do not use let, const, arrow functions, template strings, modules, #include, C declarations or prototypes. "
+        "Do not invent FUN_/DAT_ names or leave raw x86 register names or assembly labels in the function. "
+        "The original function name may be included in a comment if it is not a legal JScript identifier. "
+        "Use every required callee, global and string by name when possible. "
+        "Write a leading comment with Purpose: Inferred:, Args:, Returns:, Globals: and Calls:. "
+        "Answer with one code block only, no explanation."
+    )
+else:
+    SYSTEM = ("You are a careful C/C++ programmer reconstructing source code of a 32-bit Windows program. "
+              "You get a BLUEPRINT made by a tool that read the machine code. The FACTS in it are exact. "
+              "Write the complete function in %s. You are free to choose variable names, structure and comments. "
+              "Rules you must follow: use every callee, global and string named in the FACTS with exactly that name; "
+              "do NOT write #include lines, extern lines or function prototypes: the DECLARATIONS section is added to your code automatically; "
+              "do not invent other FUN_/DAT_ names; do not use raw register names (eax, esp, ...) or goto labels: write normal structured C "
+              "(if/else/while/for) with meaningful variable names, and use a local array for the stack frame; "
+              "if the Ghidra C hint disagrees with the FACTS, trust the FACTS. "
+              "When the PSEUDO section says it is complete, your code must do exactly that, in that order (same operations, same operands). "
+              "If the BLUEPRINT has a CHECKLIST, it lists what the finished function must contain. "
+              "Write only the function itself (with its header comment). "
+              "Start the function with a header comment block for a human reader, with these lines: "
+              "Purpose: (one or two plain sentences; this line is your interpretation, so begin it with 'Inferred:'), "
+              "Args: (each argument and its meaning), Returns: (what the value is), "
+              "Globals: (each global, whether it is read or written), Calls: (each function it calls, and why, if clear). "
+              "Answer with one code block only, no explanation.")
+    SYSTEM_PROMPT = SYSTEM % a.lang
 
 
 PROG = {"i": 0, "n": 0, "name": "", "try": 1, "t0": 0.0, "last": 0.0, "done_secs": 0.0}
@@ -71,7 +113,7 @@ def show(ntok, t_ask, force=False):
 
 
 def ask(user):
-    msgs = [{"role": "system", "content": SYSTEM % a.lang}, {"role": "user", "content": user}]
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
     url = a.url.rstrip("/") + "/v1/chat/completions"
     parts, nt, t_ask = [], 0, time.perf_counter()
     try:
@@ -173,8 +215,10 @@ def fix_return(code, rf):
 
 
 def tidy(code, chk):
-    fn = chk["function"].split("::")[-1]
     code = repair_header(code)
+    if a.lang == "JScript":
+        return code
+    fn = chk["function"].split("::")[-1]
     code = fix_regs(code, fn)
     return fix_return(code, (chk.get("machine") or {}).get("return_from"))
 
@@ -186,7 +230,9 @@ def check(code, chk, bp_text):
     jni_names = {n for n in chk["must_call"] if ("(*env)->" + n) in bp_text}
     for n in chk["must_call"]:
         if n in jni_names:
-            if not re.search(r"->\s*" + re.escape(n) + r"\s*\(", code):
+            jni_call = (r"\b" + re.escape(n) + r"\s*\(") if a.lang == "JScript" else \
+                (r"->\s*" + re.escape(n) + r"\s*\(")
+            if not re.search(jni_call, code):
                 bad.append("missing JNI call: (*env)->" + n)
         elif not re.search(r"(?<![\w])" + re.escape(n) + r"(?![\w])", code):
             bad.append("missing call/name: " + n)
@@ -205,17 +251,25 @@ def check(code, chk, bp_text):
                 bad.append("%s must be used AFTER the call to %s (assembly adds/reads it after the call)" % (g, callee))
     if not re.search(r"(?:Purpose|Inferred)\s*:", code, re.S):
         bad.append("missing header comment with a Purpose/Inferred line")
-    for m in sorted(set(re.findall(r"\b(?:esp|ebp)\b", code))):
-        if re.search(r"\b(?:int|uint\d+_t|intptr_t|uintptr_t|char|unsigned)[\w\s\*]*\b" + m + r"\b\s*(?:=|;|,)", code):
-            continue        # declared as an ordinary variable: allowed
-        bad.append("raw stack register used as a variable: " + m + " (use a real local array/variable)")
+    if a.lang == "JScript":
+        code_without_comments = mask_comments(code)
+        for register in sorted(set(re.findall(
+                r"\b(?:eax|ebx|ecx|edx|esi|edi|esp|ebp|al|bl|cl|dl|ah|ax)\b",
+                code_without_comments, re.I))):
+            bad.append("raw register used as a JScript variable: " + register)
+    else:
+        for m in sorted(set(re.findall(r"\b(?:esp|ebp)\b", code))):
+            if re.search(r"\b(?:int|uint\d+_t|intptr_t|uintptr_t|char|unsigned)[\w\s\*]*\b" + m + r"\b\s*(?:=|;|,)", code):
+                continue        # declared as an ordinary variable: allowed
+            bad.append("raw stack register used as a variable: " + m + " (use a real local array/variable)")
     # labels copied from the blueprint's LIFTED section are valid C (the structuring left them as goto); invented ones are not
     inv = sorted(set(re.findall(r"\bL_[0-9a-fA-F]{8}\b", code)) - set(re.findall(r"\bL_[0-9a-fA-F]{8}\b", bp_text)))
     if inv:
         bad.append("invented assembly labels: " + ", ".join(inv))
-    for m in sorted(set(re.findall(r"\b(?:al|cl|dl|bl|ah|ax)\b", code))):
-        if not re.search(r"\b(?:int|uint\d+_t|char|unsigned)[\w\s\*]*\b" + m + r"\b", code):
-            bad.append("undeclared register-name variable: " + m)
+    if a.lang != "JScript":
+        for m in sorted(set(re.findall(r"\b(?:al|cl|dl|bl|ah|ax)\b", code))):
+            if not re.search(r"\b(?:int|uint\d+_t|char|unsigned)[\w\s\*]*\b" + m + r"\b", code):
+                bad.append("undeclared register-name variable: " + m)
 
     mc = chk.get("machine")
     if mc:
@@ -306,6 +360,8 @@ def strip_decls(code, chk):
 
 
 def finalize(code, chk):
+    if a.lang == "JScript":
+        return code.strip() + "\n"
     decl = list(chk.get("declarations", ["#include <stdint.h>"]))
     for _inc in ("#include <stddef.h>", "#include <stdbool.h>"):
         if _inc not in decl:
@@ -313,9 +369,32 @@ def finalize(code, chk):
     return "\n".join(decl) + "\n\n" + strip_decls(code, chk)
 
 
-def compile_gate(full_code):
-    """Real compiler check (gcc -fsyntax-only) with a stub jni.h. Returns a list of error lines.
-    Returns None if no gcc is found (check skipped)."""
+def compile_gate(full_code, artifact_path=None):
+    """Compile-check output without executing it; JScript mode may retain the generated .NET EXE.
+    Returns None for C/C++ when no gcc/cc/clang is found."""
+    if a.lang == "JScript":
+        d = tempfile.mkdtemp()
+        try:
+            source_path = os.path.join(d, "t.js")
+            with open(source_path, "w", encoding="utf-8") as source:
+                source.write(full_code)
+            result = subprocess.run([JSC, source_path], cwd=d, capture_output=True, text=True, timeout=60)
+            diagnostics = (result.stdout or "") + "\n" + (result.stderr or "")
+            if result.returncode:
+                errors = [line.strip() for line in diagnostics.splitlines()
+                          if re.search(r"\berror\b", line, re.I)]
+                return errors or ["jsc.exe exited with code %d" % result.returncode]
+            if artifact_path:
+                compiled_path = os.path.join(d, "t.exe")
+                if not os.path.isfile(compiled_path):
+                    return ["jsc.exe did not produce the expected .NET executable"]
+                os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
+                shutil.copy2(compiled_path, artifact_path)
+            return []
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ["jsc.exe compile failed: %s" % exc]
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
     gcc = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
     if not gcc:
         return None
@@ -377,8 +456,17 @@ for idx, st in enumerate(stems, 1):
     secs, toks = time.perf_counter() - PROG["t0"], TOK[0] - tok0
     PROG["done_secs"] += secs
     code = finalize(code, chk)
-    compiled = "compiler-checked" if cerr is not None else "COMPILER NOT FOUND (text checks only)"
-    ext = ".cpp" if a.lang == "C++" else ".c"
+    if a.lang == "JScript":
+        if not bad:
+            cerr = compile_gate(code, os.path.join(NET_DIR, st + ".exe"))
+            if cerr is None:
+                bad.append("jsc.exe compile check was skipped")
+            else:
+                bad += ["does not compile to a .NET executable: " + error for error in cerr]
+        compiled = "jsc.exe checked .NET output" if cerr is not None else "JSC NOT FOUND"
+    else:
+        compiled = "compiler-checked" if cerr is not None else "COMPILER NOT FOUND (text checks only)"
+    ext = {"C": ".c", "C++": ".cpp", "JScript": ".js"}[a.lang]
     open(os.path.join(CODE_DIR, st + ext), "w", encoding="utf-8", newline="\n").write(code)
     status = "PASS" if not bad else "FAIL"
     open(os.path.join(CHK_DIR, st + ".check.txt"), "w", encoding="utf-8", newline="\n").write(

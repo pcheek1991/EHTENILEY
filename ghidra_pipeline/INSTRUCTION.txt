@@ -470,6 +470,11 @@ Both KEEP and WRAP queues are selected by default. Use --track KEEP or
 REPLACE are not automatically converted. The requested model must already
 be loaded in the local OpenAI-style server.
 
+For JScript.NET output, add --lang JScript --jsc "<path to jsc.exe>". This
+uses the same native KEEP/WRAP selections and writes .js plus a compiled
+.NET .exe; COREO never runs the executable. This target is JScript.NET, not
+Java or JVM 1.3.1.
+
 Every --out directory must be new. COREO keeps the normal Ghidra outputs under
 ghidra\OUT, per-group LLM outputs under llm\<GroupName>, and records source
 hashes, selected queue rows, options, stage status, and output paths in

@@ -1,9 +1,13 @@
 import ast
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +17,26 @@ import coreo_pipeline
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BLUEPRINT_SCRIPT = REPO_ROOT / "llm_pipeline" / "blueprint_v3.py"
 COREO_SCRIPT = REPO_ROOT / "coreo_pipeline.py"
+
+
+class FakeChatHandler(BaseHTTPRequestHandler):
+    source_code = ""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        body = "".join(
+            "data: %s\n\n" % json.dumps({"choices": [{"delta": {"content": chunk}}]})
+            for chunk in self.source_code.splitlines(keepends=True)
+        ) + "data: [DONE]\n\n"
+        payload = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):
+        pass
 
 
 def make_dump(root, program="demo"):
@@ -146,6 +170,110 @@ class CoreoPipelineTests(unittest.TestCase):
             self.assertIn("requires an output folder without old blueprint/check files",
                           reused_result.stderr)
 
+    def test_language_modes_and_javascript_compile_without_live_model(self):
+        jsc = shutil.which("jsc.exe") or shutil.which("jsc")
+        if not jsc and os.name == "nt":
+            windows_root = Path(os.environ.get("WINDIR", r"C:\Windows"))
+            for framework, version in (
+                    ("Framework", "v4.0.30319"),
+                    ("Framework64", "v4.0.30319"),
+                    ("Framework", "v2.0.50727"),
+                    ("Framework64", "v2.0.50727")):
+                candidate = windows_root / "Microsoft.NET" / framework / version / "jsc.exe"
+                if candidate.is_file():
+                    jsc = str(candidate)
+                    break
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            blueprint_dir = root / "BLUEPRINT"
+            blueprint_dir.mkdir()
+            stem = "00000001_hello"
+            (blueprint_dir / (stem + ".blueprint.txt")).write_text(
+                "BLUEPRINT hello\nFACTS\nFunction returns the constant 1.\n",
+                encoding="utf-8",
+            )
+            (blueprint_dir / (stem + ".check.json")).write_text(json.dumps({
+                "function": "hello",
+                "entry": "00000001",
+                "must_call": [],
+                "must_use_globals": [],
+                "must_use_strings": [],
+                "reads_after_call": [],
+                "machine": {"loops": 0, "steps": [], "return_from": None, "cond_consts": []},
+            }), encoding="utf-8")
+            source_by_language = {
+                "C": (
+                    "/*\n"
+                    "Purpose: Inferred: returns one.\n"
+                    "Args: none.\n"
+                    "Returns: one.\n"
+                    "Globals: none.\n"
+                    "Calls: none.\n"
+                    "*/\n"
+                    "int32_t hello(void) { return 1; }\n"
+                ),
+                "C++": (
+                    "/*\n"
+                    "Purpose: Inferred: returns one.\n"
+                    "Args: none.\n"
+                    "Returns: one.\n"
+                    "Globals: none.\n"
+                    "Calls: none.\n"
+                    "*/\n"
+                    "int32_t hello(void) { return 1; }\n"
+                ),
+            }
+            if jsc:
+                source_by_language["JScript"] = (
+                "function hello() {\n"
+                "    // Purpose: Inferred: returns a constant.\n"
+                "    // Args: none\n"
+                "    // Returns: one\n"
+                "    // Globals: none\n"
+                "    // Calls: none\n"
+                "    return 1;\n"
+                "}\n"
+                )
+            server = ThreadingHTTPServer(("127.0.0.1", 0), FakeChatHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                for language, source_code in source_by_language.items():
+                    FakeChatHandler.source_code = source_code
+                    output_dir = root / ("RUN_" + language)
+                    command = [
+                        sys.executable, str(REPO_ROOT / "llm_pipeline" / "run_blueprint_llm_v3.py"),
+                        "--bp", str(blueprint_dir), "--out", str(output_dir),
+                        "--url", "http://127.0.0.1:%d" % server.server_address[1],
+                        "--lang", language,
+                    ]
+                    if language == "JScript":
+                        command += ["--jsc", str(jsc)]
+                    result = subprocess.run(
+                        command, cwd=str(REPO_ROOT), capture_output=True, text=True,
+                        timeout=120, check=False,
+                    )
+                    self.assertEqual(0, result.returncode,
+                                     result.stdout + result.stderr + " (lang=%s)" % language)
+                    self.assertIn(
+                        "PASS\thello\t",
+                        (output_dir / "RESULTS.txt").read_text(encoding="utf-8"),
+                    )
+                    if language == "JScript":
+                        self.assertTrue((output_dir / "JSCRIPT" / (stem + ".js")).is_file())
+                        executable = output_dir / "NET" / (stem + ".exe")
+                        self.assertTrue(executable.is_file())
+                        self.assertEqual(b"MZ", executable.read_bytes()[:2])
+                    else:
+                        code_dir = "CPP" if language == "C++" else "C"
+                        extension = ".cpp" if language == "C++" else ".c"
+                        self.assertTrue((output_dir / code_dir / (stem + extension)).is_file())
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
     def test_single_function_uses_selected_keep_wrap_queues_and_redacts_manifest_url(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -153,6 +281,8 @@ class CoreoPipelineTests(unittest.TestCase):
             make_dump(dump_root)
             out = root / "runs" / "demo-run"
             url = "https://user:password@example.test:8443/api/v1?token=secret#fragment"
+            jsc_path = root / "jsc.exe"
+            jsc_path.write_text("stub compiler path", encoding="utf-8")
             commands = []
 
             def fake_process(command, cwd, check):
@@ -208,7 +338,7 @@ class CoreoPipelineTests(unittest.TestCase):
 
             status = coreo_pipeline.run_coreo([
                 "--dump-root", str(dump_root), "--program", "demo", "--out", str(out),
-                "--group", "Alpha", "--url", url,
+                "--group", "Alpha", "--url", url, "--lang", "JScript", "--jsc", str(jsc_path),
             ], process_runner=fake_process)
             manifest = json.loads((out / "COREO_MANIFEST.json").read_text(encoding="utf-8"))
             stage_names = [stage["name"] for stage in manifest["stages"]]
@@ -233,6 +363,13 @@ class CoreoPipelineTests(unittest.TestCase):
             runner_stage = next(stage for stage in manifest["stages"] if stage["name"] == "run-llm:Alpha")
             self.assertEqual("https://example.test:8443",
                              runner_stage["command"][runner_stage["command"].index("--url") + 1])
+            self.assertEqual("JScript", runner_stage["command"][
+                runner_stage["command"].index("--lang") + 1
+            ])
+            self.assertEqual(str(jsc_path.resolve()), runner_stage["command"][
+                runner_stage["command"].index("--jsc") + 1
+            ])
+            self.assertEqual(str(jsc_path.resolve()), manifest["options"]["llm"]["jsc_path"])
             self.assertEqual("completed", manifest["status"])
             self.assertIn("select-queue-entries", stage_names)
 

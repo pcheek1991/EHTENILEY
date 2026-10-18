@@ -149,7 +149,8 @@ OPTIONS:
 --out DIR	where the results go (required). Use a new folder name for every run.
 --model NAME	the model name in LM Studio (default qwen2.5-coder-14b-instruct)
 --url URL	default http://127.0.0.1:1234
---lang C	C (default) or C++ (the C++ output is not tested yet)
+--lang C	C (default), C++, or JScript.NET
+--jsc PATH	optional path to jsc.exe (required for --lang JScript; otherwise searched in PATH/standard .NET Framework folders)
 --temp 0.0	default 0.0, so a run can be repeated
 
 While it runs, one line shows the progress:
@@ -165,6 +166,11 @@ CHECKS\		<-- PASS or FAIL with the reasons, one file per function
 -----------------------------------
 WHAT THE RUNNER CHECKS AND REPAIRS
 -----------------------------------
+
+With `--lang JScript`, source files go to `JSCRIPT\` and jsc.exe-compiled
+.NET executables go to `NET\`. JScript mode uses Microsoft JScript.NET, not
+Java or JVM bytecode. The generated executable is compiled for validation
+and is never run by the pipeline.
 
 CHECKS (after the LLM answers):
 - the function name is there
@@ -242,6 +248,11 @@ queue-filtered blueprints, and the LLM runner in order. Both KEEP and WRAP are
 selected by default; `--track KEEP` or `--track WRAP` and repeatable
 `--group "<GroupName>"` narrow the model work. The local server and requested
 model must be ready because COREO runs the LLM stage automatically.
+
+To generate JScript.NET instead of C/C++, add
+`--lang JScript --jsc "<path to jsc.exe>"`. This still consumes the native
+KEEP/WRAP blueprint queues; the output is `.js` plus a compiled .NET `.exe`.
+JSC compiles the file, but COREO does not execute it.
 
 The completed Ghidra artifacts remain under `ghidra\OUT`; each group's
 `BLUEPRINT_v3`, `RUN1_v3_<model>`, and `SELECTED_ENTRIES.txt` remain under

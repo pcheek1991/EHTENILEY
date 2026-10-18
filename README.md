@@ -123,7 +123,7 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" --model <model name>
 ```
 
-You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), and gcc (recommended, used as a compile check).
+You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), and gcc (recommended, used as a compile check). JScript mode additionally needs Microsoft `jsc.exe`.
 
 ------------------------------
 ----- COREO: both pipelines -----
@@ -138,6 +138,8 @@ python .\coreo_pipeline.py --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps"
 ```
 
 COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.
+
+The default output language remains C. Use `--lang C++` for C++, or `--lang JScript --jsc "<path to jsc.exe>"` for JScript.NET. JScript mode writes `.js` source under `JSCRIPT` and compiles a `.NET` `.exe` under `NET`; it never runs the generated executable. This JScript.NET target is not Java or JVM 1.3.1.
 
 Each run uses a new output directory. `COREO_MANIFEST.json` records input hashes, options, selected queue rows, stage status, model settings, and output paths; server URL credentials, path, and query are redacted. Ghidra artifacts remain under `ghidra\OUT`; per-group blueprints and LLM results remain under `llm\<GroupName>`. You can still run every existing script directly as described in the two instruction files.
 
