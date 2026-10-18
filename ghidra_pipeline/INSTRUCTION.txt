@@ -313,6 +313,8 @@ OVERRIDES.tsv (optional, see the OVERRIDES part below)
 OPTIONS:
 --report-dir DIR   (default OUT\TRIAGE)
 --overrides FILE   use this OVERRIDES.tsv (see below)
+--no-imports       disable imports auto-discovery when none are supplied
+--no-overrides     disable OVERRIDES.tsv auto-discovery
 --crt-start HEX    default 411000 (il2fb value): functions at/after this
                    address with no game strings do not inherit KEEP/WRAP.
                    SET IT FOR EACH EXE: it is where the C runtime starts
@@ -451,3 +453,53 @@ The scripts read function addresses as 8 hex digits, so they fit
 The triage defaults (--crt-start, --runtime-prefixes) are il2fb
 values. Set them for each exe.
 Only il2fb.exe was tested so far.
+
+-------------------------------------------------------------
+OPTIONAL: RUN BOTH PIPELINES WITH COREO
+-------------------------------------------------------------
+First create the Ghidra dump as above. The PyGhidra exporter runs inside
+Ghidra and remains a separate step. From the repository root, run:
+
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+
+Equivalent full orchestration entry points are available as
+`lua .\coreo_pipeline.lua`, `Rscript .\coreo_pipeline.R`, and
+`python .\coreo_pipeline.py`; they accept the same COREO flags and compose the
+existing Ghidra/LLM pipeline CLIs.
+The legacy `coreo_pipeline_py2.py` backport requires a Python 3 executable via
+`--python`; Python 2.7 is end-of-life (see the README for isolated venv setup).
+The C# port is `coreo_pipeline.cs`, loaded by PowerShell Core 7.6.7:
+`pwsh -NoProfile -File .\coreo_pipeline.ps1 --mode FORWARD ...`.
+
+COREO stages the assembly and C dumps plus optional classes/imports without
+editing the original dump. It then runs make_full_lite_v2.py,
+triage_evidence_v2.py, build_roles_v2.py, blueprint_v3.py, and the LLM runner.
+Both KEEP and WRAP queues are selected by default. Use --track KEEP or
+--track WRAP and repeat --group "<GroupName>" to narrow the run. UNKNOWN and
+REPLACE are not automatically converted. The requested model must already
+be loaded in the local OpenAI-style server.
+
+For JScript.NET output, add --lang JScript --jsc "<path to jsc.exe>". This
+uses the same native KEEP/WRAP selections and writes .js plus a compiled
+.NET .exe; COREO never runs the executable. This target is JScript.NET, not
+Java or JVM 1.3.1.
+
+Every --out directory must be new. COREO keeps the normal Ghidra outputs under
+ghidra\OUT, per-group LLM outputs under llm\<GroupName>, and records source
+hashes, selected queue rows, options, stage status, and output paths in
+COREO_MANIFEST.json. The standalone commands above remain available.
+
+After each LLM run, COREO writes language-independent `.hex` sidecars under
+`llm\<GroupName>\RUN1_v3_<model>\COREOAO`. It applies the CAND formula to the
+current source and previous two selected sources in manifest selection order;
+the first two selected sources are skipped. The sidecars are lossy, not
+cryptographic output, and do not replace the C/C++/JScript source files.
+Each sidecar has one byte per shared UTF-16 code-unit index.
+`REVERSE`/`BIDI` restore only staged Ghidra dump inputs, not `.hex` files.
+
+Use --mode BIDI to run forward and restore the staged dump inputs into
+BIDI_RESTORE\source with SHA-256 verification. Use --mode REVERSE with
+--source-run "<prior COREO run>" and a new --out directory to restore an
+existing run's preserved dump files. This restores only the staged Ghidra
+text artifacts; it cannot reconstruct the original executable or reverse
+LLM-generated source. COREO requires the .NET SDK's F# Interactive (`dotnet fsi`).

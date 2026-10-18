@@ -64,8 +64,9 @@ Run every command from the LLM Hangar folder.
 
 Bring up powershell and cd to it:   cd "(address to the folder)"
 
-NOTE: The blueprint step makes a blueprint for EVERY function in the group folder. It does not read the triage labels.
+NOTE: Without an entry allowlist, the standalone blueprint step makes a blueprint for EVERY function in the group folder. It does not read the triage labels.
 Use QUEUE_KEEP.tsv and QUEUE_WRAP.tsv to choose what to run. REPLACE functions are never converted.
+The optional --entries-file PATH accepts one 8-digit ENTRY per line and limits blueprint generation to those functions. COREO uses it to connect the triage queues to this pipeline. Omitting it preserves the all-functions behavior.
 
 ----------------------------------------
 STEP TWO - MAKE THE BLUEPRINTS (no LLM)
@@ -77,7 +78,13 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 NOTE: The script also reads the other groups in SOURCE\LITE_AC to learn the function signatures
 (how many arguments each function takes). So keep --group inside the full LITE_AC folder.
 
-The folder BLUEPRINT_v3 will be created with two files for every function:
+Optional: add `--entries-file ".\selected_entries.txt"` to restrict this group to
+the listed 8-digit function entries. Entries that are not present in the group
+are reported as an error. Use a fresh output directory; the script refuses to
+mix filtered output with older blueprint/check files.
+
+The folder BLUEPRINT_v3 will be created with two files for every selected function
+(every function in the group when `--entries-file` is omitted):
 
 <entry>_<name>.blueprint.txt	<-- what the LLM gets (see the parts below)
 <entry>_<name>.check.json	<-- what the runner checks afterwards (names, order, loops, return value)
@@ -142,7 +149,8 @@ OPTIONS:
 --out DIR	where the results go (required). Use a new folder name for every run.
 --model NAME	the model name in LM Studio (default qwen2.5-coder-14b-instruct)
 --url URL	default http://127.0.0.1:1234
---lang C	C (default) or C++ (the C++ output is not tested yet)
+--lang C	C (default), C++, or JScript.NET
+--jsc PATH	optional path to jsc.exe (required for --lang JScript; otherwise searched in PATH/standard .NET Framework folders)
 --temp 0.0	default 0.0, so a run can be repeated
 
 While it runs, one line shows the progress:
@@ -158,6 +166,11 @@ CHECKS\		<-- PASS or FAIL with the reasons, one file per function
 -----------------------------------
 WHAT THE RUNNER CHECKS AND REPAIRS
 -----------------------------------
+
+With `--lang JScript`, source files go to `JSCRIPT\` and jsc.exe-compiled
+.NET executables go to `NET\`. JScript mode uses Microsoft JScript.NET, not
+Java or JVM bytecode. The generated executable is compiled for validation
+and is never run by the pipeline.
 
 CHECKS (after the LLM answers):
 - the function name is there
@@ -219,3 +232,54 @@ LIMITS (observed)
   pointer-sized types. This is not done yet.
 - Very long functions are still the hardest case.
 - Addresses are read as 8 hex digits, so only 32-bit programs fit.
+
+---------------------------
+COREO: COMBINED PIPELINE
+---------------------------
+
+After PyGhidra has written its `<program>_ASSEMBLY`, `<program>_C_PSEUDOCODE`,
+and `<program>_INVENTORY` folders, run the COREO entry point from the repository
+root:
+
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+
+Equivalent full orchestration entry points are available as
+`lua .\coreo_pipeline.lua`, `Rscript .\coreo_pipeline.R`, and
+`python .\coreo_pipeline.py`; they accept the same COREO flags and compose the
+existing Ghidra/LLM pipeline CLIs.
+The legacy `coreo_pipeline_py2.py` backport requires a Python 3 executable via
+`--python`; Python 2.7 is end-of-life (see the README for isolated venv setup).
+The C# port is `coreo_pipeline.cs`, loaded by PowerShell Core 7.6.7:
+`pwsh -NoProfile -File .\coreo_pipeline.ps1 --mode FORWARD ...`.
+
+COREO stages the Ghidra inputs and runs grouping, triage, roles/queues,
+queue-filtered blueprints, and the LLM runner in order. Both KEEP and WRAP are
+selected by default; `--track KEEP` or `--track WRAP` and repeatable
+`--group "<GroupName>"` narrow the model work. The local server and requested
+model must be ready because COREO runs the LLM stage automatically.
+
+To generate JScript.NET instead of C/C++, add
+`--lang JScript --jsc "<path to jsc.exe>"`. This still consumes the native
+KEEP/WRAP blueprint queues; the output is `.js` plus a compiled .NET `.exe`.
+JSC compiles the file, but COREO does not execute it.
+
+The completed Ghidra artifacts remain under `ghidra\OUT`; each group's
+`BLUEPRINT_v3`, `RUN1_v3_<model>`, and `SELECTED_ENTRIES.txt` remain under
+`llm\<GroupName>`. The root `COREO_MANIFEST.json` records source hashes,
+selected queue rows, options, stage results, and output paths. Each run needs
+a new output directory. The manual commands in this file still work unchanged.
+
+COREO also writes language-independent `.hex` sidecars under
+`llm\<GroupName>\RUN1_v3_<model>\COREOAO`. For each source after the first two,
+the CAND transform uses that source as M0 and the preceding two selected
+sources as M1/M2 in manifest selection order. Inputs use UTF-16 code units;
+output length is the minimum input code-unit length and bytes are uppercase hex
+pairs. This transform is lossy, not encryption,
+and does not replace C/C++/JScript source files.
+
+`--mode REVERSE --source-run "<prior COREO run>" --out "<new restore directory>"`
+restores the preserved Ghidra dump files after SHA-256 verification.
+`--mode BIDI` runs the forward pipeline and verifies that those original dump
+inputs can be restored under `BIDI_RESTORE\source`. This inverse uses the
+preserved source/provenance; it cannot infer the original executable or source
+from lossy LLM output or decode the `.hex` sidecars.

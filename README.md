@@ -123,7 +123,66 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 python .\run_blueprint_llm_v3.py --bp ".\G_<GroupName>\BLUEPRINT_v3" --out ".\G_<GroupName>\RUN1_v3_<model>" --model <model name>
 ```
 
-You need Ghidra with PyGhidra, Python 3, LM Studio (one model loaded), and gcc (recommended, used as a compile check).
+You need Ghidra with PyGhidra, Python 3 for the existing pipeline CLIs, LM Studio (one model loaded), and gcc (recommended, used as a compile check). The canonical F# entry point uses the .NET SDK (`dotnet fsi`); the C# port uses PowerShell Core 7.6.7. Lua/R/Python 2 entry points need their respective runtimes. JScript mode additionally needs Microsoft `jsc.exe`.
+
+------------------------------
+----- COREO: both pipelines -----
+------------------------------
+
+F# remains the canonical COREO implementation in the single `runCoreo` function in `coreo_pipeline.fsx`. The function stays multiline to keep stage control flow and error/provenance handling readable. Full orchestration ports in Lua, R, and Python 3 use the same Ghidra/LLM CLI interfaces; Lua keeps the flow documented, while R vectorizes the CAND byte operations. Correctness parity is tested; no runtime speed winner is claimed without a benchmark. First analyze the program in PyGhidra and run `ghidra_pipeline/PyGhidra Scripts/decompile_full_dump.py` as usual. That exporter runs inside Ghidra; COREO starts from its completed three-folder dump.
+
+From the repository root, run:
+
+```
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+The same arguments are accepted by the Lua, R, and Python 3 ports:
+
+```
+lua .\coreo_pipeline.lua --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+Rscript .\coreo_pipeline.R --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+python .\coreo_pipeline.py --mode FORWARD --dump-root "$env:USERPROFILE\Downloads\Ghidra_Dumps" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+The legacy Python 2.7 backport is `coreo_pipeline_py2.py`. Python 2.7 is end-of-life; use it only in an isolated compatibility environment. The backport invokes the existing Python 3 Ghidra/LLM CLIs, so pass their interpreter with `--python` when `python3` is not on PATH:
+
+```
+python2 -m pip install virtualenv==16.7.12
+python2 -m virtualenv .\.venv-py2
+.\.venv-py2\Scripts\python.exe -m pip install -r .\requirements-py2.txt
+.\.venv-py2\Scripts\python.exe .\coreo_pipeline_py2.py --python "<Python 3 executable>" --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+The C# port is in `coreo_pipeline.cs` and is loaded by the PowerShell Core 7.6.7 wrapper; `Add-Type` compiles it in-process, and COREO does not produce or run a C# executable:
+
+```
+pwsh -NoProfile -File .\coreo_pipeline.ps1 --mode FORWARD --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+```
+
+COREO stages the source dump files without changing them, then runs grouping, triage, roles/queues, queue-filtered blueprints, and the local LLM runner in order. Both `QUEUE_KEEP.tsv` and `QUEUE_WRAP.tsv` are selected by default; use `--track KEEP` or `--track WRAP` and repeat `--group "<GroupName>"` to narrow the run. `UNKNOWN` and `REPLACE` are not automatically converted. LM Studio must be running with the requested model loaded.
+
+The default output language remains C. Use `--lang C++` for C++, or `--lang JScript --jsc "<path to jsc.exe>"` for JScript.NET. JScript mode writes `.js` source under `JSCRIPT` and compiles a `.NET` `.exe` under `NET`; it never runs the generated executable. This JScript.NET target is not Java or JVM 1.3.1.
+
+Each run uses a new output directory. `COREO_MANIFEST.json` records input hashes, options, selected queue rows, stage status, model settings, and output paths; server URL credentials, path, and query are redacted. Ghidra artifacts remain under `ghidra\OUT`; per-group blueprints and LLM results remain under `llm\<GroupName>`. You can still run every existing script directly as described in the two instruction files.
+
+After LLM output is written, COREO adds language-independent `.hex` sidecars under `llm\<GroupName>\RUN1_v3_<model>\COREOAO`. In manifest selection order, each eligible current source is `M0`, with the preceding selected sources as `M1` and `M2`; the first two selections are skipped until a full history exists. The transform uses JavaScript-compatible UTF-16 code units, the fixed mask `0x3F`, and shift `3`, producing uppercase byte pairs separated by spaces:
+
+```
+v = (abs(M0[i] - M1[i]) XOR abs(M1[i] - M2[i]) XOR (M0[i] AND 0x3F)) OR 0xC0
+out[i] = (v OR ((v << 3) OR (v >> 5))) AND 0xFF
+```
+
+Each sidecar has `min(M0.Length, M1.Length, M2.Length)` output bytes, using UTF-16 code-unit indices.
+These sidecars are a deterministic, lossy mapping—not encryption or a reversible encoding. The original C/C++/JScript source files remain untouched, with their hashes and the three source paths recorded in the manifest. `REVERSE` and `BIDI` restore/verify the staged Ghidra dump inputs only; they do not decode or reconstruct source from `.hex`.
+
+COREO can restore the staged Ghidra dump files from an earlier run into a new directory, checking their recorded SHA-256 hashes:
+
+```
+dotnet fsi --quiet --exec .\coreo_pipeline.fsx -- --mode REVERSE --source-run ".\COREO_RUNS\<prior-run>" --out ".\COREO_RESTORES\<restore-name>"
+```
+
+Use `--mode BIDI` with the normal `--dump-root`, `--program`, and `--out` arguments to run forward and then verify an exact restoration under `BIDI_RESTORE\source`. This inverse restores only the preserved dump artifacts; it does not reconstruct the original executable or reverse lossy LLM-generated C, C++, JScript, or .NET output.
 
 --------------------------
 ----- Results so far -----
