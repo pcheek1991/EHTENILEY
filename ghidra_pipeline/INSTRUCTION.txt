@@ -313,6 +313,8 @@ OVERRIDES.tsv (optional, see the OVERRIDES part below)
 OPTIONS:
 --report-dir DIR   (default OUT\TRIAGE)
 --overrides FILE   use this OVERRIDES.tsv (see below)
+--no-imports       disable imports auto-discovery when none are supplied
+--no-overrides     disable OVERRIDES.tsv auto-discovery
 --crt-start HEX    default 411000 (il2fb value): functions at/after this
                    address with no game strings do not inherit KEEP/WRAP.
                    SET IT FOR EACH EXE: it is where the C runtime starts
@@ -451,3 +453,24 @@ The scripts read function addresses as 8 hex digits, so they fit
 The triage defaults (--crt-start, --runtime-prefixes) are il2fb
 values. Set them for each exe.
 Only il2fb.exe was tested so far.
+
+-------------------------------------------------------------
+OPTIONAL: RUN BOTH PIPELINES WITH COREO
+-------------------------------------------------------------
+First create the Ghidra dump as above. The PyGhidra exporter runs inside
+Ghidra and remains a separate step. From the repository root, run:
+
+python .\coreo_pipeline.py --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+
+COREO stages the assembly and C dumps plus optional classes/imports without
+editing the original dump. It then runs make_full_lite_v2.py,
+triage_evidence_v2.py, build_roles_v2.py, blueprint_v3.py, and the LLM runner.
+Both KEEP and WRAP queues are selected by default. Use --track KEEP or
+--track WRAP and repeat --group "<GroupName>" to narrow the run. UNKNOWN and
+REPLACE are not automatically converted. The requested model must already
+be loaded in the local OpenAI-style server.
+
+Every --out directory must be new. COREO keeps the normal Ghidra outputs under
+ghidra\OUT, per-group LLM outputs under llm\<GroupName>, and records source
+hashes, selected queue rows, options, stage status, and output paths in
+COREO_MANIFEST.json. The standalone commands above remain available.

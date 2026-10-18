@@ -64,8 +64,9 @@ Run every command from the LLM Hangar folder.
 
 Bring up powershell and cd to it:   cd "(address to the folder)"
 
-NOTE: The blueprint step makes a blueprint for EVERY function in the group folder. It does not read the triage labels.
+NOTE: Without an entry allowlist, the standalone blueprint step makes a blueprint for EVERY function in the group folder. It does not read the triage labels.
 Use QUEUE_KEEP.tsv and QUEUE_WRAP.tsv to choose what to run. REPLACE functions are never converted.
+The optional --entries-file PATH accepts one 8-digit ENTRY per line and limits blueprint generation to those functions. COREO uses it to connect the triage queues to this pipeline. Omitting it preserves the all-functions behavior.
 
 ----------------------------------------
 STEP TWO - MAKE THE BLUEPRINTS (no LLM)
@@ -77,7 +78,13 @@ python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<Grou
 NOTE: The script also reads the other groups in SOURCE\LITE_AC to learn the function signatures
 (how many arguments each function takes). So keep --group inside the full LITE_AC folder.
 
-The folder BLUEPRINT_v3 will be created with two files for every function:
+Optional: add `--entries-file ".\selected_entries.txt"` to restrict this group to
+the listed 8-digit function entries. Entries that are not present in the group
+are reported as an error. Use a fresh output directory; the script refuses to
+mix filtered output with older blueprint/check files.
+
+The folder BLUEPRINT_v3 will be created with two files for every selected function
+(every function in the group when `--entries-file` is omitted):
 
 <entry>_<name>.blueprint.txt	<-- what the LLM gets (see the parts below)
 <entry>_<name>.check.json	<-- what the runner checks afterwards (names, order, loops, return value)
@@ -219,3 +226,25 @@ LIMITS (observed)
   pointer-sized types. This is not done yet.
 - Very long functions are still the hardest case.
 - Addresses are read as 8 hex digits, so only 32-bit programs fit.
+
+---------------------------
+COREO: COMBINED PIPELINE
+---------------------------
+
+After PyGhidra has written its `<program>_ASSEMBLY`, `<program>_C_PSEUDOCODE`,
+and `<program>_INVENTORY` folders, run the COREO entry point from the repository
+root:
+
+python .\coreo_pipeline.py --dump-root "<Ghidra_Dumps>" --program "<dump-folder-prefix>" --out ".\COREO_RUNS\<run-name>" --model "<loaded model name>"
+
+COREO stages the Ghidra inputs and runs grouping, triage, roles/queues,
+queue-filtered blueprints, and the LLM runner in order. Both KEEP and WRAP are
+selected by default; `--track KEEP` or `--track WRAP` and repeatable
+`--group "<GroupName>"` narrow the model work. The local server and requested
+model must be ready because COREO runs the LLM stage automatically.
+
+The completed Ghidra artifacts remain under `ghidra\OUT`; each group's
+`BLUEPRINT_v3`, `RUN1_v3_<model>`, and `SELECTED_ENTRIES.txt` remain under
+`llm\<GroupName>`. The root `COREO_MANIFEST.json` records source hashes,
+selected queue rows, options, stage results, and output paths. Each run needs
+a new output directory. The manual commands in this file still work unchanged.

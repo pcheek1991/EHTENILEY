@@ -16,15 +16,19 @@ Usage (PowerShell), full paths:
 Terminal already in the folder with OUT (cd):
   python .\triage_evidence.py --lite .\OUT\LITE_AC --imports "<path to>\02_imports.txt"
 
-Options: --report-dir FOLDER, --runtime-prefixes "RTS_,SFS_,nh_" (name starts that mean runtime / file handling)."""
+Options: --report-dir FOLDER, --runtime-prefixes "RTS_,SFS_,nh_"; --no-imports and --no-overrides disable their respective auto-discovery."""
 import argparse, os, re, sys
 from collections import Counter, defaultdict
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--lite", required=True, help="the LITE_AC folder (group folders inside)")
-ap.add_argument("--imports", default=None, help="02_imports.txt from the INVENTORY folder (recommended)")
+imports_args = ap.add_mutually_exclusive_group()
+imports_args.add_argument("--imports", default=None, help="02_imports.txt from the INVENTORY folder (recommended)")
+imports_args.add_argument("--no-imports", action="store_true", help="do not auto-discover imports when none were supplied")
 ap.add_argument("--report-dir", default=None, help="default: the folder that contains the LITE folder")
-ap.add_argument("--overrides", default=None, help="v2: OVERRIDES.tsv (ENTRY<TAB>LABEL<TAB>NOTE): labels you decided by hand; default: OVERRIDES.tsv next to the script or in the report folder")
+overrides_args = ap.add_mutually_exclusive_group()
+overrides_args.add_argument("--overrides", default=None, help="v2: OVERRIDES.tsv (ENTRY<TAB>LABEL<TAB>NOTE): labels you decided by hand; default: OVERRIDES.tsv next to the script or in the report folder")
+overrides_args.add_argument("--no-overrides", action="store_true", help="do not auto-discover an OVERRIDES.tsv file")
 ap.add_argument("--runtime-prefixes", default="RTS_,SFS_,nh_",
                 help="comma list of function-name starts that mean runtime / file handling")
 ap.add_argument("--crt-start", default="411000", help="v2: hex address where the C runtime zone starts; functions at/after it with no game strings do not inherit KEEP/WRAP (0 = off)")
@@ -96,7 +100,7 @@ def read(p):
 
 # ---- imports: name -> library (lower case, no .dll)
 imports = {}
-if not a.imports:                      # v2: look for 02_imports.txt next to the script or in the current folder
+if not a.imports and not a.no_imports:  # v2: look for 02_imports.txt next to the script or in the current folder
     for _d in (os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
         _p = os.path.join(_d, "02_imports.txt")
         if os.path.isfile(_p):
@@ -111,6 +115,8 @@ if a.imports:
             lib = p[0].split("::")[-1].strip().lower()
             lib = lib[:-4] if lib.endswith(".dll") else lib
             imports.setdefault(p[1].strip(), lib)
+elif a.no_imports:
+    print("NOTE: --no-imports set; Windows API calls will not be recognised.")
 else:
     print("NOTE: no --imports file given, so Windows API calls will not be recognised.")
 
@@ -305,7 +311,7 @@ def setl(f, lab, w):
 overrides = {}
 CRT_START = int(a.crt_start, 16)
 _ov = a.overrides
-if not _ov:
+if not _ov and not a.no_overrides:
     for _d in (REPORT_DIR, os.path.dirname(os.path.abspath(__file__)), os.getcwd()):
         _p = os.path.join(_d, "OVERRIDES.tsv")
         if os.path.isfile(_p):
@@ -317,6 +323,8 @@ if _ov and os.path.isfile(_ov):
         if len(_p) >= 2 and re.fullmatch(r"[0-9A-Fa-f]{8}", _p[0].strip()) and _p[1].strip().upper() in ("KEEP", "WRAP", "REPLACE", "UNKNOWN"):
             overrides[_p[0].strip().lower()] = (_p[1].strip().upper(), _p[2].strip() if len(_p) > 2 else "")
     print("Overrides: %d from %s" % (len(overrides), _ov))
+elif a.no_overrides:
+    print("Overrides: disabled by --no-overrides")
 
 for f in funcs:
     n, cn = f["name"], clean(f["name"])

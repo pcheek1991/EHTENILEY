@@ -5,10 +5,11 @@
 r"""blueprint_v3.py (v2 + return-value fact) - Python reads the ASSEMBLY of each function and writes a BLUEPRINT (facts + skeleton)
 plus a CHECKLIST (facts the LLM's code must contain). Read-only. No LLM.
 
-Usage:  python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<GroupName>\BLUEPRINT_v3"
+Usage:  python .\blueprint_v3.py --group ".\SOURCE\LITE_AC\<GroupName>" --out ".\G_<GroupName>\BLUEPRINT_v3" [--entries-file FILE]
 Input : the per-function .txt files of one group (header + [ASSEMBLY] + optional [C PSEUDOCODE]).
 Output: <entry>_<name>.blueprint.txt   facts, lifted code, checklist, declarations, skeleton, optional Ghidra C hint
         <entry>_<name>.check.json      must_call / must_use_globals / must_use_strings / nargs / checklist / machine facts
+Optional --entries-file restricts output to the listed 8-digit function entries; without it, every group file is processed.
 Everything is read from the assembly text; nothing is guessed about behavior that the assembly does not show."""
 import argparse, json, os, re, sys
 
@@ -17,6 +18,7 @@ ap.add_argument("--group", required=True, help="folder of one group (LITE_AC\\<G
 ap.add_argument("--out", required=True)
 ap.add_argument("--checklist-overrides", default=None, help="CHECKLIST_OVERRIDES.txt: ENTRY<TAB>text adds a line; ENTRY<TAB>-word removes auto lines containing word")
 ap.add_argument("--index-dir", default=None, help="folder with ALL groups (LITE_AC) to learn callee signatures; default: parent of --group")
+ap.add_argument("--entries-file", default=None, help="optional allowlist with one 8-digit function ENTRY per line; without it, every function in --group is processed")
 a = ap.parse_args()
 
 MEM = re.compile(r"\[(0x[0-9A-Fa-f]{6,8})\]")
@@ -906,14 +908,54 @@ def check(r):
             "machine": make_checklist(r["lift"], r["info"]["entry"].lower())[1]}
 
 
-INDEX = build_index(a.index_dir or os.path.dirname(os.path.abspath(a.group.rstrip("\\/"))))
-print("signatures learned for %d names" % len(INDEX))
-os.makedirs(a.out, exist_ok=True)
+def read_entry_allowlist(path):
+    entries = set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line_number, line in enumerate(f, 1):
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                if not re.fullmatch(r"[0-9a-fA-F]{8}", entry):
+                    sys.exit("invalid entry on line %d in %s: %s" % (line_number, path, entry))
+                entries.add(entry.lower())
+    except OSError as exc:
+        sys.exit("could not read entry allowlist %s: %s" % (path, exc))
+    if not entries:
+        sys.exit("entry allowlist contains no function entries: " + path)
+    return entries
+
+
 files = sorted(f for f in os.listdir(a.group) if f.lower().endswith(".txt"))
+allowlist = read_entry_allowlist(a.entries_file) if a.entries_file else None
+records = []
+found_entries = set()
 for f in files:
     r = analyse(os.path.join(a.group, f))
     if not r["info"]["name"]:
         continue
+    entry = r["info"]["entry"].lower().zfill(8)
+    if allowlist is not None and entry not in allowlist:
+        continue
+    found_entries.add(entry)
+    records.append((f, r))
+
+if allowlist is not None:
+    missing = sorted(allowlist - found_entries)
+    if missing:
+        sys.exit("allowlist entries not found in group %s: %s" % (a.group, ", ".join(missing)))
+if not records:
+    sys.exit("no functions found in group: " + a.group)
+if allowlist is not None and os.path.isdir(a.out):
+    stale = [f for f in os.listdir(a.out)
+             if f.endswith(".blueprint.txt") or f.endswith(".check.json")]
+    if stale:
+        sys.exit("--entries-file requires an output folder without old blueprint/check files: " + a.out)
+
+INDEX = build_index(a.index_dir or os.path.dirname(os.path.abspath(a.group.rstrip("\\/"))))
+print("signatures learned for %d names" % len(INDEX))
+os.makedirs(a.out, exist_ok=True)
+for f, r in records:
     stem = os.path.splitext(f)[0]
     open(os.path.join(a.out, stem + ".blueprint.txt"), "w", encoding="utf-8", newline="\n").write(blueprint(r))
     json.dump(check(r), open(os.path.join(a.out, stem + ".check.json"), "w", encoding="utf-8", newline="\n"), indent=1)
